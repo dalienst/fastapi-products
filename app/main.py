@@ -1,113 +1,94 @@
 from typing import Annotated
-from fastapi import FastAPI, Query, Form
-from pydantic import BaseModel, Field, HttpUrl
-from fastapi.security import OAuth2PasswordBearer
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel
+
+fake_users_db = {
+    "johndoe": {
+        "username": "johndoe",
+        "full_name": "John Doe",
+        "email": "johndoe@example.com",
+        "hashed_password": "fakehashedsecret",
+        "disabled": False,
+    },
+    "alice": {
+        "username": "alice",
+        "full_name": "Alice Wonderson",
+        "email": "alice@example.com",
+        "hashed_password": "fakehashedsecret2",
+        "disabled": True,
+    },
+}
 
 app = FastAPI()
 
 
+def fake_hash_password(password: str):
+    return "fakehashed" + password
 
 
-class FormData(BaseModel):
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+
+class User(BaseModel):
     username: str
-    password: str
-    model_config = {"extra": "forbid"}
+    email: str | None = None
+    full_name: str | None = None
+    disabled: bool | None = None
 
 
-class Image(BaseModel):
-    url: HttpUrl
-    name: str
+class UserInDB(User):
+    hashed_password: str
 
 
-class Product(BaseModel):
-    name: str
-    price: float = Field(gt=0, description="The price must be greater than zero")
-    in_stock: bool
-    description: str | None = Field(
-        default=None, max_length=300, title="Description of the product"
-    )
-    tax: float | None = None
-    tags: set[str] = set()
-    images: list[Image] | None = Field(
-        default=None,
-        max_items=10,
-        examples=[
-            {"url": "https://example.com/image1.jpg", "name": "Image 1"},
-        ],
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "name": "Foo",
-                    "price": 50.2,
-                    "in_stock": True,
-                    "description": "Foo product",
-                    "images": [
-                        {"url": "https://example.com/image1.jpg", "name": "Image 1"},
-                        {"url": "https://example.com/image2.jpg", "name": "Image 2"},
-                    ],
-                    "tax": 1.5,
-                }
-            ]
-        }
-    }
+def get_user(db, username: str):
+    if username in db:
+        user_dict = db[username]
+        return UserInDB(**user_dict)
 
 
-class Offer(BaseModel):
-    name: str
-    description: str | None = None
-    price: float
-    products: list[Product]
+def fake_decode_token(token):
+    # This doesn't provide any security at all
+    # Check the next version
+    user = get_user(fake_users_db, token)
+    return user
 
 
-@app.get("/")
-async def root():
-    return {"message": "Welcome To Kenya"}
+async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
+    user = fake_decode_token(token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
 
 
-# Auth routes
-@app.post("/login/")
-async def login(data: Annotated[FormData, Form()]):
-    return data
+async def get_current_active_user(
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    if current_user.disabled:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    return current_user
 
 
-# Image routes
-@app.post("/images/multiple/")
-async def create_multiple_images(images: list[Image]):
-    return images
+@app.post("/token")
+async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    user_dict = fake_users_db.get(form_data.username)
+    if not user_dict:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    user = UserInDB(**user_dict)
+    hashed_password = fake_hash_password(form_data.password)
+    if not hashed_password == user.hashed_password:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+
+    return {"access_token": user.username, "token_type": "bearer"}
 
 
-# Product routes
-@app.post("/products/")
-async def create_product(product: Product):
-    product_dict = product.model_dump()
-    if product.tax:
-        product_with_tax = product.price + product.tax
-        product_dict.update({"price_with_tax": product_with_tax})
-    return product_dict
-
-
-@app.patch("/products/{product_id}")
-async def update_product(product_id: str, product: Product):
-    return {"product_id": product_id, **product.model_dump(exclude_unset=True)}
-
-
-@app.get("/products/")
-async def read_products(q: Annotated[list[str] | None, Query()] = None):
-    results = {"products": [{"product_id": "foo"}, {"product_id": "bar"}]}
-    if q:
-        results.update({"q": q})
-    return results
-
-
-@app.get("/products/{product_id}")
-async def read_product(product_id: str):
-    return {"product_id": product_id}
-
-
-# Offer routes
-@app.post("/offers/")
-async def create_offer(offer: Offer):
-    return offer
+@app.get("/users/me")
+async def read_users_me(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+):
+    return current_user
