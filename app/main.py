@@ -1,8 +1,14 @@
 from typing import Annotated
-from fastapi import FastAPI, Query
-from pydantic import BaseModel, Field, HttpUrl
+from fastapi import FastAPI, Query, HTTPException
+from pydantic import BaseModel, Field, HttpUrl, Form
 
 app = FastAPI()
+
+
+class FormData(BaseModel):
+    username: str
+    password: str
+    model_config = {"extra": "forbid"}
 
 
 class Image(BaseModel):
@@ -19,7 +25,31 @@ class Product(BaseModel):
     )
     tax: float | None = None
     tags: set[str] = set()
-    images: list[Image] | None = None
+    images: list[Image] | None = Field(
+        default=None,
+        max_items=10,
+        examples=[
+            {"url": "https://example.com/image1.jpg", "name": "Image 1"},
+        ],
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "name": "Foo",
+                    "price": 50.2,
+                    "in_stock": True,
+                    "description": "Foo product",
+                    "images": [
+                        {"url": "https://example.com/image1.jpg", "name": "Image 1"},
+                        {"url": "https://example.com/image2.jpg", "name": "Image 2"},
+                    ],
+                    "tax": 1.5,
+                }
+            ]
+        }
+    }
 
 
 class Offer(BaseModel):
@@ -34,6 +64,19 @@ async def root():
     return {"message": "Welcome To Kenya"}
 
 
+# Auth routes
+@app.post("/login/")
+async def login(data: Annotated[FormData, Form()]):
+    return data
+
+
+# Image routes
+@app.post("/images/multiple/")
+async def create_multiple_images(images: list[Image]):
+    return images
+
+
+# Product routes
 @app.post("/products/")
 async def create_product(product: Product):
     product_dict = product.model_dump()
@@ -43,9 +86,9 @@ async def create_product(product: Product):
     return product_dict
 
 
-@app.put("/products/{product_id}")
-async def update_product(product_id: int, product: Product):
-    return {"product_id": product_id, **product.model_dump()}
+@app.patch("/products/{product_id}")
+async def update_product(product_id: str, product: Product):
+    return {"product_id": product_id, **product.model_dump(exclude_unset=True)}
 
 
 @app.get("/products/")
@@ -54,6 +97,11 @@ async def read_products(q: Annotated[list[str] | None, Query()] = None):
     if q:
         results.update({"q": q})
     return results
+
+
+@app.get("/products/{product_id}")
+async def read_product(product_id: str):
+    return {"product_id": product_id}
 
 
 # Offer routes
